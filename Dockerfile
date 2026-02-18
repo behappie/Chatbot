@@ -1,5 +1,6 @@
 # Use an official Python runtime as a parent image (pinned to bookworm for stability)
-FROM python:3.9-slim-bookworm
+# Upgraded to 3.10 for better ML library support (e.g. paddlepaddle 2.6.2+)
+FROM python:3.10-slim-bookworm
 
 # Set environment variables
 ENV PYTHONDONTWRITEBYTECODE=1
