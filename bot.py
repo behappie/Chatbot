@@ -220,8 +220,8 @@ logger = logging.getLogger(__name__)
 # --- Configuration ---
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
-if GOOGLE_API_KEY:
-    genai.configure(api_key=GOOGLE_API_KEY)
+# Client configuration moved to main() using genai.Client
+
 
 GOOGLE_SHEETS_CREDENTIALS = "credentials.json"
 SPREADSHEET_ID = "1o4yG81XMKyhTAAxQDDFYfAdEzR2ah7ILxQElflDwevo"
