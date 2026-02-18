@@ -1,0 +1,9 @@
+python-telegram-bot
+faster-whisper
+ffmpeg-python
+dashscope
+gspread
+oauth2client
+python-dotenv
+aiohttp
+requests
