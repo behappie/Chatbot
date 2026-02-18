@@ -177,15 +177,21 @@ RULES:
 7.  **Fallback**: Use the current conversation context to determine if the student needs a direct answer.
 """
 
+# Use specific version to avoid 404 on some keys
 model = genai.GenerativeModel(
-    model_name="gemini-1.5-flash",
+    model_name="gemini-1.5-flash-001",
     safety_settings=safety_settings,
     system_instruction=SYSTEM_INSTRUCTION
 )
 
 # --- Google Sheets Setup ---
 def log_to_sheets(user_info: Dict, interaction_type: str, content: str, response: str):
-    if not HAS_GSPREAD or not os.path.exists(GOOGLE_SHEETS_CREDENTIALS):
+    if not HAS_GSPREAD:
+        logger.error("Google Sheets Error: gspread library not installed.")
+        return
+        
+    if not os.path.exists(GOOGLE_SHEETS_CREDENTIALS):
+        logger.error(f"Google Sheets Error: Credentials file '{GOOGLE_SHEETS_CREDENTIALS}' not found.")
         return
 
     try:
@@ -206,6 +212,7 @@ def log_to_sheets(user_info: Dict, interaction_type: str, content: str, response
             clean_response[:1000]
         ]
         sheet.append_row(row)
+        logger.info(f"Successfully logged interaction to Google Sheet for {user_info.get('name')}.")
     except Exception as e:
         logger.error(f"Failed to log to sheets: {e}")
 
@@ -435,6 +442,15 @@ def main():
     else:
         masked_key = GOOGLE_API_KEY[:4] + "*" * (len(GOOGLE_API_KEY) - 8) + GOOGLE_API_KEY[-4:]
         print(f"GOOGLE_API_KEY found: {masked_key}")
+        
+        # Verify Model Availability
+        try:
+            print("Listing available Gemini models...")
+            for m in genai.list_models():
+                if 'generateContent' in m.supported_generation_methods:
+                    print(f" - {m.name}")
+        except Exception as e:
+            print(f"Error listing models: {e}")
 
     # Start the dummy server for Render
     start_health_check_server()
@@ -446,6 +462,12 @@ def main():
         pass # Expected error, but checks binary presence roughly. 
     except FileNotFoundError:
         print("CRITICAL WARNING: FFmpeg not found in path.")
+        
+    # Check Credentials
+    if os.path.exists(GOOGLE_SHEETS_CREDENTIALS):
+        print(f"Credentials file found: {GOOGLE_SHEETS_CREDENTIALS}")
+    else:
+        print(f"CRITICAL WARNING: Credentials file '{GOOGLE_SHEETS_CREDENTIALS}' NOT found. Logging will fail.")
 
     application = Application.builder().token(TOKEN).build()
 
