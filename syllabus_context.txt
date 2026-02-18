@@ -1,0 +1,58 @@
+SINGAPORE GCE A-LEVEL ECONOMICS SYLLABUS REFERENCE
+
+H1 ECONOMICS (8843) & H2 ECONOMICS (9757)
+
+THEME 1: THE CENTRAL ECONOMIC PROBLEM
+1.1 Scarcity, Choice and Opportunity Cost
+1.2 Rational Decision Making (Marginalist Principle)
+
+THEME 2: MARKETS (MICROECONOMICS)
+2.1 Price Mechanism and its Applications
+    - Demand and Supply analysis
+    - Elasticities (PED, YED, PES, XED [H2 Only])
+    - Consumer and Producer Surplus
+2.2 Market Failure
+    - Public Goods (Non-excludability, Non-rivalry)
+    - Externalities (Positive/Negative in Consumption/Production)
+    - Merit and Demerit Goods
+    - Information Failure (Asymmetric Information [H2 Only])
+    - Immobility of Factors of Production [H2 Only]
+    - Policies to correct market failure (Taxes, Subsidies, Regulation, Direct Provision, etc.)
+2.3 Firms and Decisions [H2 Only]
+    - Costs and Revenue (Short run vs Long run)
+    - Profiit Maximisation
+    - Market Structures:
+        - Perfect Competition
+        - Monopolistic Competition
+        - Oligopoly (Kinked Demand Curve, Collusion, Price Wars)
+        - Monopoly (Natural Monopoly, Price Discrimination)
+        - Alternative Objectives of Firms (Growth, Market Share, Satisficing)
+
+THEME 3: THE NATIONAL AND INTERNATIONAL ECONOMY (MACROECONOMICS)
+3.1 Introduction to Macroeconomics
+    - Circular Flow of Income
+    - Aggregate Demand (AD) and Aggregate Supply (AS) analysis
+3.2 Macroeconomic Aims and Issues
+    - Standard of Living (Material & Non-material)
+    - Economic Growth (Actual vs Potential, Sustainable, Inclusive)
+    - Unemployment (Types, Causes, Consequences)
+    - Price Stability (Inflation/Deflation: Causes, Consequences)
+    - Balance of Payments (Current/Capital/Financial Account) [H2 detailed, H1 awareness]
+3.3 Macroeconomic Policies
+    - Fiscal Policy (Discretionary vs Automatic Stabilisers)
+    - Monetary Policy (Interest Rates vs Exchange Rates [Singapore context: MAS focus on Exchange Rate])
+    - Supply-side Policies
+
+THEME 3 (CONTINUED) - INTERNATIONAL ECONOMICS [H2 Emphasis]
+3.4 Globalisation and the International Economy
+    - Globalisation (Causes, Consequences)
+    - Theory of Comparative Advantage
+    - Patterns of Trade
+    - Protectionism (Tariffs, Quotas, Subsidies)
+    - Free Trade Agreements (FTAs)
+
+EXAMINATION SKILLS (Use these for Scaffolding):
+- **Knowledge & Understanding (AO1)**: Definitions, Concepts.
+- **Interpretation & Evaluation (AO2)**: Application to context/case.
+- **Analysis (AO3)**: Economic reasoning, logical chains of analysis.
+- **Evaluation (AO4)**: Critical assessment, judgment, synthesis (e.g., Short run vs Long run, prioritizing policies).
