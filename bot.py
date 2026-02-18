@@ -9,27 +9,158 @@ import warnings
 from datetime import datetime
 from typing import Dict, Any, Optional, List, Union
 
-# Suppress Google GenAI deprecation warnings (Must be before import)
-warnings.filterwarnings("ignore", category=FutureWarning, module="google.generativeai")
-warnings.filterwarnings("ignore", category=FutureWarning, module="google.api_core")
-
-# Now import libraries that might emit warnings
-import telegram
-from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, constants
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    ContextTypes,
-    ConversationHandler,
-    MessageHandler,
-    filters,
-)
-from dotenv import load_dotenv
+# ... (Previous imports)
 from faster_whisper import WhisperModel
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 import ffmpeg
 
-# PaddleOCR Import
+# ... (Paddle Imports)
+
+# --- Configuration ---
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+
+# Client placeholder
+client = None
+
+# ... (Sheets setup) ...
+
+# ... (Model Loaders) ...
+
+# ... (Global States) ...
+
+# ... (DB functions) ...
+
+# ... (Syllabus Load) ...
+
+# --- Gemini Configuration ---
+SYSTEM_INSTRUCTION = f"""
+You are an expert Economics Tutor for Singapore Junior College students (H1 8843 / H2 9570).
+Your goal is to guide students using the Socratic method (scaffolding).
+ALWAYS strictly adhere to the Singapore JC syllabus:
+{SYLLABUS_CONTEXT}
+
+RULES:
+1.  **Scaffolding**: NEVER give the direct answer immediately unless the user has failed repeatedly (see prompt instructions). Guide them with questions.
+2.  **Evaluation**: You must evaluate the student's input.
+    - If the student is WRONG, start your response with `[INCORRECT]`.
+    - If the student is RIGHT, start your response with `[CORRECT]`.
+    - If the student asks a question or the input is neutral/conversational, start with `[NEUTRAL]`.
+3.  **Tone**: Encouraging, professional, patient.
+4.  **Language**: Use strict British English (e.g., 'colour', 'maximise', 'centre').
+5.  **Essays**: Summarize strengths, identify weaknesses, and scaffold improvements.
+6.  **Diagrams**: Check label accuracy. If inaccurate, explain the error and provide a hint.
+7.  **Fallback**: Use the current conversation context to determine if the student needs a direct answer.
+"""
+
+# Safety settings (New SDK Format)
+# We will configure this in the chat creation
+
+# ... (log_to_sheets) ...
+
+# ... (start, register_name, register_cg, cancel) ...
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    chat_id = str(user.id)
+    
+    if chat_id not in user_db:
+        await update.message.reply_text("Please run /start first.")
+        return
+
+    user_info = user_db[chat_id]
+    interaction_type = "text"
+    user_text_input = ""
+    
+    await context.bot.send_chat_action(chat_id=chat_id, action=constants.ChatAction.TYPING)
+
+    # 1. Processing Input (Voice/Image/Text)
+    try:
+        # ... (Voice/Image/Text logic same as before) ...
+        # (I will copy the input processing block from previous file content to ensure it's preserved or reference it if I'm replacing the whole file? 
+        # The tool replaces a block. I need to be careful not to delete the input processing logic.
+        # I will Target the `handle_message` function specifically or the Gemini part of it.)
+        
+        # ... (Voice/Image logic omitted for brevity in thought, but must be in ReplacementContent)
+        # Actually, I should probably use `replace_file_content` targeting specific blocks to avoid deleting the huge input processing chunk.
+        
+        # Let's Target the Gemini Interaction block inside handle_message.
+        pass
+    except Exception as e:
+        logger.error(f"Input processing error: {e}")
+        await update.message.reply_text("Something went wrong processing your input.")
+        return
+
+    # 2. Gemini Interaction
+    try:
+        current_attempts = user_info.get("consecutive_wrong_attempts", 0)
+        history = user_info.get("history", [])
+
+        if len(history) > 20: 
+            history = history[-20:]
+        
+        prompt_suffix = ""
+        if current_attempts >= 5:
+            prompt_suffix = "\n\n[SYSTEM NOTICE: The student has failed 5 times consecutively. Please provide the DIRECT CORRECT ANSWER now and explain it clearly.]"
+        
+        # Convert history to new SDK format if needed
+        # New SDK expects: role='user'|'model', parts=[types.Part.from_text(text=...)] or just strings?
+        # It accepts list of dicts: [{'role': 'user', 'parts': [{'text': '...'}]}]
+        # Our DB has [{'role': 'user', 'parts': ['text']}]
+        # We might need to adjust. Let's try to map it.
+        formatted_history = []
+        for h in history:
+            role = h['role']
+            # potentially map 'model' to 'model'
+            text_parts = h['parts']
+            formatted_history.append({'role': role, 'parts': [{'text': p} for p in text_parts]})
+
+        if not client:
+             await update.message.reply_text("Bot initialization error (No Client).")
+             return
+
+        # Configure Chat
+        chat = client.chats.create(
+            model='gemini-1.5-flash', # Try generic alias first, or fallback handle in main?
+            config=types.GenerateContentConfig(
+                system_instruction=SYSTEM_INSTRUCTION,
+                temperature=0.7,
+                safety_settings=[
+                    types.SafetySetting(
+                        category="HARM_CATEGORY_HARASSMENT",
+                        threshold="BLOCK_MEDIUM_AND_ABOVE"
+                    ),
+                    types.SafetySetting(
+                        category="HARM_CATEGORY_HATE_SPEECH",
+                        threshold="BLOCK_MEDIUM_AND_ABOVE"
+                    ),
+                    types.SafetySetting(
+                        category="HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                        threshold="BLOCK_MEDIUM_AND_ABOVE"
+                    ),
+                    types.SafetySetting(
+                        category="HARM_CATEGORY_DANGEROUS_CONTENT",
+                        threshold="BLOCK_MEDIUM_AND_ABOVE"
+                    ),
+                ]
+            ),
+            history=formatted_history
+        )
+        
+        final_prompt = user_text_input + prompt_suffix
+        
+        # Run in thread
+        response = await asyncio.to_thread(chat.send_message, final_prompt)
+        bot_response_raw = response.text
+        
+        # ... (Post-processing same as before) ...
+        # ... (Save to DB, Reply, Log) ...
+
+    except Exception as e:
+        # ...
+        pass
+
 try:
     from paddleocr import PaddleOCR
     HAS_PADDLE = True
@@ -384,24 +515,46 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         current_attempts = user_info.get("consecutive_wrong_attempts", 0)
         history = user_info.get("history", [])
 
-        # Limit history to last 10 turns (20 messages) to prevent context overflow or excessive cost
         if len(history) > 20: 
             history = history[-20:]
         
-        # Prepare Prompt injection for Fallback logic
         prompt_suffix = ""
         if current_attempts >= 5:
             prompt_suffix = "\n\n[SYSTEM NOTICE: The student has failed 5 times consecutively. Please provide the DIRECT CORRECT ANSWER now and explain it clearly.]"
         
-        # Start Chat with History
-        # Note: 'history' in user_db is list of dicts, GenAI expects list of Content objects or dicts compatible.
-        # We need to ensure the format is correct: [{'role': 'user', 'parts': ['...']}, ...]
-        
-        chat = model.start_chat(history=history or [])
-        
-        # Parse response
-        final_prompt = user_text_input + prompt_suffix
-        response = await chat.send_message_async(final_prompt)
+        # New SDK History Format: [{'role': 'user', 'parts': [{'text': '...'}]}]
+        formatted_history = []
+        for h in history:
+            role = h['role']
+            text_parts = h['parts']
+            # Ensure parts are list of dicts with 'text' key or just strings if supported.
+            # SDK v2 usually supports valid Part objects or dicts.
+            formatted_history.append({'role': role, 'parts': [{'text': p} for p in text_parts]})
+
+        if not client:
+             await update.message.reply_text("Bot initialization error (No Client).")
+             return
+
+        # Configure Chat
+        # Using a fresh chat session with history for each request (stateless bot perspective with history injection)
+        def run_chat(h, prompt):
+            chat = client.chats.create(
+                model='gemini-1.5-flash',
+                config=types.GenerateContentConfig(
+                    system_instruction=SYSTEM_INSTRUCTION,
+                    temperature=0.7,
+                    safety_settings=[
+                        types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="BLOCK_MEDIUM_AND_ABOVE"),
+                        types.SafetySetting(category="HARM_CATEGORY_HATE_SPEECH", threshold="BLOCK_MEDIUM_AND_ABOVE"),
+                        types.SafetySetting(category="HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold="BLOCK_MEDIUM_AND_ABOVE"),
+                        types.SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="BLOCK_MEDIUM_AND_ABOVE"),
+                    ]
+                ),
+                history=h
+            )
+            return chat.send_message(prompt)
+
+        response = await asyncio.to_thread(run_chat, formatted_history, user_text_input + prompt_suffix)
         bot_response_raw = response.text
         
         # 3. Post-Processing
@@ -414,22 +567,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user_info["consecutive_wrong_attempts"] = 0
             final_response_text = bot_response_raw.replace("[CORRECT]", "").strip()
         elif bot_response_raw.startswith("[NEUTRAL]"):
-             # Keep attempts same
             final_response_text = bot_response_raw.replace("[NEUTRAL]", "").strip()
         
-        # Update History
-        # We append the RAW exchange so the model knows what it said (including tags) for consistency, 
-        # or cleaned? Better RAW so it knows its state.
-        # Using helper to format for next load
         user_info["history"].append({"role": "user", "parts": [user_text_input]})
         user_info["history"].append({"role": "model", "parts": [bot_response_raw]})
         
         save_user_db(user_db)
         
-        # Send
         await update.message.reply_text(final_response_text)
         
-        # Log
         asyncio.create_task(asyncio.to_thread(log_to_sheets, user_info, interaction_type, user_text_input, final_response_text))
 
     except Exception as e:
@@ -457,10 +603,17 @@ async def debug(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # 2. Gemini Models
     try:
         models = []
-        for m in genai.list_models():
-            if 'generateContent' in m.supported_generation_methods:
-                models.append(m.name)
-        response_lines.append(f"🤖 *Available Models:* \n`{', '.join(models)}`")
+        if client:
+            for m in client.models.list():
+                # Filter useful models? Or just list text ones. 
+                # SDK v2 models object has `name`.
+                # Check formatting.
+                name = m.name 
+                if "gemini" in name and "flash" in name:
+                     models.append(name.replace("models/", ""))
+            response_lines.append(f"🤖 *Available Models (Flash):* \n`{', '.join(models)}`")
+        else:
+            response_lines.append("❌ Client not initialized.")
     except Exception as e:
         response_lines.append(f"❌ Model List Error: {e}")
         
@@ -479,33 +632,22 @@ def main():
         masked_key = GOOGLE_API_KEY[:4] + "*" * (len(GOOGLE_API_KEY) - 8) + GOOGLE_API_KEY[-4:]
         print(f"GOOGLE_API_KEY found: {masked_key}")
 
-    # Initialize Gemini Model with Fallback
-    global model
-    available_models = []
-    try:
-        for m in genai.list_models():
-            if 'generateContent' in m.supported_generation_methods:
-                available_models.append(m.name)
-        print(f"Available Models: {available_models}")
-    except Exception as e:
-        print(f"Error listing models during init: {e}")
-    
-    # Selection Logic
-    chosen_model = "gemini-1.5-flash" # Default preference
-    if "models/gemini-1.5-flash" in available_models:
-        chosen_model = "gemini-1.5-flash"
-    elif "models/gemini-1.5-flash-001" in available_models:
-        chosen_model = "gemini-1.5-flash-001"
-    elif "models/gemini-pro" in available_models:
-        chosen_model = "gemini-pro"
-    
-    print(f"Selected Gemini Model: {chosen_model}")
-    
-    model = genai.GenerativeModel(
-        model_name=chosen_model,
-        safety_settings=safety_settings,
-        system_instruction=SYSTEM_INSTRUCTION
-    )
+    # Initialize Gemini Client
+    global client
+    if GOOGLE_API_KEY:
+        try:
+            client = genai.Client(api_key=GOOGLE_API_KEY)
+            print("Gemini Client Initialized.")
+            
+            # List models to verify
+            print("Accessible Models:")
+            for m in client.models.list():
+                if "gemini" in m.name:
+                    print(f" - {m.name}")
+        except Exception as e:
+             print(f"Failed to initialize Gemini Client: {e}")
+    else:
+        print("CRITICAL: GOOGLE_API_KEY missing.")
 
     # Start the dummy server for Render
     start_health_check_server()
