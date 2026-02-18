@@ -7,3 +7,6 @@ oauth2client
 python-dotenv
 aiohttp
 requests
+paddlepaddle==2.6.1
+paddleocr>=2.7.0.3
+opencv-python-headless

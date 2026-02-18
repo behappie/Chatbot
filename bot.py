@@ -9,7 +9,7 @@ from datetime import datetime
 from typing import Dict, Any, Optional, List, Union, cast, Callable, Generator
 
 import dashscope
-from dashscope import MultiModalConversation, Generation
+from dashscope import Generation
 from http import HTTPStatus
 from telegram import Message, Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, constants, WebAppInfo, KeyboardButton
 from telegram.ext import (
@@ -22,6 +22,13 @@ from telegram.ext import (
 )
 from dotenv import load_dotenv
 from faster_whisper import WhisperModel
+# PaddleOCR Import - handled carefully for memory
+try:
+    from paddleocr import PaddleOCR
+    HAS_PADDLE = True
+except ImportError:
+    HAS_PADDLE = False
+    print("Warning: paddleocr not installed.")
 
 load_dotenv()
 
@@ -48,7 +55,6 @@ GOOGLE_SHEETS_CREDENTIALS = "credentials.json"
 SPREADSHEET_ID = "1o4yG81XMKyhTAAxQDDFYfAdEzR2ah7ILxQElflDwevo"
 
 # Global Whisper Model (Load once)
-# Using 'tiny.en' as requested. 'int8' quantization is default and fast.
 try:
     # Run on CPU for broad compatibility in standard containers
     whisper_model = WhisperModel("tiny.en", device="cpu", compute_type="int8")
@@ -56,6 +62,19 @@ try:
 except Exception as e:
     logger.error(f"Failed to load Whisper model: {e}")
     whisper_model = None
+    
+# Global PaddleOCR Model (Lazy load or load once depending on RAM strategy)
+# For 512MB RAM, keeping both loaded is risky. 
+# But loading on every request is slow. Let's try loading once and hope for the best, or create on demand if needed.
+# Using use_angle_cls=True enhances accuracy but uses more RAM. We set lang='en'.
+paddle_ocr = None
+if HAS_PADDLE:
+    try:
+         # Use lightweight model if possible
+         paddle_ocr = PaddleOCR(use_angle_cls=True, lang='en', show_log=False)
+         logger.info("PaddleOCR loaded successfully.")
+    except Exception as e:
+         logger.error(f"Failed to load PaddleOCR: {e}")
 
 # --- Global States ---
 REGISTER_NAME, REGISTER_CG = range(2)
@@ -94,14 +113,16 @@ RULES:
 1. If the user asks a non-Economics question, politely redirect them to Economics.
 2. Tone: Encouraging, professional, patient.
 3. Use British English spelling (e.g., 'colour', 'maximise', 'centre') in all responses.
-4. For Essays/Handwriting: Summarize strengths, identify weaknesses, and scaffold improvements.
-5. For Diagrams: Validate accuracy. If wrong, provide HINTS. Only give the full answer if the user has failed 5 times in a row.
+4. For Essays (Text provided from OCR): Summarize strengths, identify weaknesses, and scaffold improvements.
+5. For Diagrams (Labels provided from OCR): Check accuracy based on the LABELS and Context. If labels imply a wrong shift or concept, correct it.
+   - If ACCURATE: Compliment.
+   - If INACCURATE: Explain the error and providing a SCAFFOLDING QUESTION/HINT.
+   - CRITICAL: DO NOT provide the full correct answer YET, unless the user has failed 5 times in a row.
 """
 
 # --- Google Sheets Setup ---
 def log_to_sheets(user_info: Dict, interaction_type: str, content: str, response: str):
     if not HAS_GSPREAD or not os.path.exists(GOOGLE_SHEETS_CREDENTIALS):
-        # logger.info(f"Mock Log: {user_info.get('name')} | {interaction_type}")
         return
 
     try:
@@ -115,8 +136,8 @@ def log_to_sheets(user_info: Dict, interaction_type: str, content: str, response
             user_info.get("name"),
             user_info.get("cg"),
             interaction_type,
-            content,
-            response
+            content[:500], # Truncate likely large OCR text
+            response[:500]
         ]
         sheet.append_row(row)
     except Exception as e:
@@ -141,24 +162,13 @@ async def stream_dashscope_response(messages: List[Dict], model_name: str, updat
     last_update_time = 0.0
     
     try:
-        if model_name.startswith("qwen-vl"):
-            # MultiModal does not always support streaming gracefully in all SDK versions, but let's try standard call first if streaming fails or use iterator
-            responses = MultiModalConversation.call(model=model_name, messages=messages, stream=True)
-        else:
-            responses = Generation.call(model=model_name, messages=messages, result_format='message', stream=True)
+        # Use simple Generation call for text
+        responses = Generation.call(model=model_name, messages=messages, result_format='message', stream=True)
 
         for response in responses:
             if response.status_code == HTTPStatus.OK:
-                if model_name.startswith("qwen-vl"):
-                     # Structure is different for VL
-                     content = response.output.choices[0].message.content.strip()
-                     # If stream returns full text, just update buffer.
-                     # DashScope Qwen-VL streaming often returns full content-so-far.
-                     full_response = content
-                else:
-                    # Qwen-Turbo/Max
-                    content = response.output.choices[0].message.content
-                    full_response = content # DashScope streams full text so far usually
+                content = response.output.choices[0].message.content
+                full_response = content # DashScope streams full text so far usually
                 
                 current_time = datetime.now().timestamp()
                 if (current_time - last_update_time > 1.0) or message_obj is None:
@@ -286,7 +296,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Prepare for response generation
             content_for_log = transcribed_text
             
-            # Generate response to the text
+            # Generate response to the text - Uses Qwen-Turbo (LLM) not VLM
             messages = [
                 {'role': 'system', 'content': SYSTEM_PROMPT},
                 {'role': 'user', 'content': transcribed_text}
@@ -298,9 +308,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Error processing voice message.")
             return
 
-    # 2. Handle Images (Handwriting/Diagrams) - Qwen-VL
+    # 2. Handle Images (Handwriting/Diagrams) - PaddleOCR + Qwen-Turbo
     elif update.message.photo:
         interaction_type = "image"
+        
+        if not paddle_ocr:
+             await update.message.reply_text("OCR Engine not initialized.")
+             return
+
         photo = update.message.photo[-1]
         file = await context.bot.get_file(photo.file_id)
         
@@ -308,54 +323,70 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as temp_img:
             await file.download_to_drive(temp_img.name)
             img_path = temp_img.name # Absolute path
-            
-        attempts = user_info.get("consecutive_wrong_attempts", 0)
-        
-        prompt_text = (
-            f"Current consecutive wrong attempts by student: {attempts}. "
-            "Analyze this image. "
-            "1. Identify if it is an Economics DIAGRAM, HANDWRITTEN ESSAY, or OTHER. "
-            "2. IF ESSAY: Summarize strengths, identify weaknesses, and provide scaffolding questions. "
-            "3. IF DIAGRAM: Check accuracy against Singapore A-Level Economics standards. "
-            "   - If ACCURATE: Compliment. "
-            "   - If INACCURATE: Explain the error and providing a SCAFFOLDING QUESTION/HINT. "
-            "   - CRITICAL: DO NOT provide the full correct answer/drawing YET, unless the user has failed 5 times (attempts >= 5). "
-            "   - If attempts >= 5, THEN provide the full direct correction/answer. "
-            "Respond in a helpful, tutor tone."
-        )
 
-        # Qwen-VL-Max
-        messages = [
-            {
-                "role": "user",
-                "content": [
-                    {"image": f"file://{img_path}"},
-                    {"text": prompt_text}
-                ]
-            }
-        ]
+        await update.message.reply_text("🔍 *Analyzing Image with PaddleOCR...*", parse_mode=constants.ParseMode.MARKDOWN)
 
+        # Run PaddleOCR
         try:
-            bot_response_text = await stream_dashscope_response(messages, "qwen-vl-max", update, context)
+            def run_ocr(path):
+                # PaddleOCR result is a list of lists
+                result = paddle_ocr.ocr(path, cls=True)
+                # Concatenate all text found
+                txt_list = [line[1][0] for line in result[0]] if result and result[0] else []
+                return "\n".join(txt_list)
+
+            extracted_text = await asyncio.to_thread(run_ocr, img_path)
             
-            # Update state simple heuristic
+            logger.info(f"OCR Extracted: {extracted_text[:100]}...")
+            
+            if not extracted_text.strip():
+                await update.message.reply_text("I couldn't read any text in this image. Is it clear?")
+                os.remove(img_path)
+                return
+
+            attempts = user_info.get("consecutive_wrong_attempts", 0)
+            
+            prompt_text = (
+                f"Current consecutive wrong attempts by student: {attempts}. "
+                "I have extracted the following text from an image (diagram labels or handwritten essay): \n"
+                f"\"\"\"{extracted_text}\"\"\"\n\n"
+                "1. Identify if this text looks like an ECONOMICS ESSAY (paragraphs) or DIAGRAM LABELS (short terms like Price, Quantity, DD, SS). "
+                "2. IF ESSAY: Summarize strengths, identify weaknesses, and provide scaffolding questions. "
+                "3. IF DIAGRAM LABELS: Infer the diagram context. Check accuracy of terms/implied shifts. "
+                "   - If ACCURATE: Compliment. "
+                "   - If INACCURATE: Explain the error and providing a SCAFFOLDING QUESTION/HINT. "
+                "   - CRITICAL: DO NOT provide the full correct answer/drawing YET, unless the user has failed 5 times (attempts >= 5). "
+                "   - If attempts >= 5, THEN provide the full direct correction/answer. "
+                "Respond in a helpful, tutor tone."
+            )
+
+            # Use Qwen-Turbo (Text LLM)
+            messages = [
+                {'role': 'system', 'content': SYSTEM_PROMPT},
+                {'role': 'user', 'content': prompt_text}
+            ]
+            
+            bot_response_text = await stream_dashscope_response(messages, "qwen-turbo", update, context)
+            
+            # Heuristic for state update
             lower_resp = bot_response_text.lower()
             if "correct" in lower_resp and "incorrect" not in lower_resp and "error" not in lower_resp:
                 user_info["consecutive_wrong_attempts"] = 0
             elif "try again" in lower_resp or "?" in lower_resp or "incorrect" in lower_resp:
                 user_info["consecutive_wrong_attempts"] += 1
             else:
-                pass # Neutral
+                pass # Neutral or Essay feedback
             
             save_user_db(user_db)
-            os.remove(img_path)
-            gc.collect()
-            content_for_log = "[Image Upload]"
+            content_for_log = f"[OCR Text] {extracted_text}"
 
         except Exception as e:
-            logger.error(f"Image Error: {e}")
-            await update.message.reply_text("Error processing image.")
-            return
+            logger.error(f"OCR/Analysis Error: {e}")
+            await update.message.reply_text("Error reading the image.")
+        finally:
+             if os.path.exists(img_path):
+                os.remove(img_path)
+             gc.collect()
 
     # 3. Handle Text (Qwen-Turbo)
     elif update.message.text:
