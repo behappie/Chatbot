@@ -9,7 +9,17 @@ import warnings
 from datetime import datetime
 from typing import Dict, Any, Optional, List, Union
 
-# ... (Previous imports)
+import telegram
+from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, constants
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    ContextTypes,
+    ConversationHandler,
+    MessageHandler,
+    filters,
+)
+from dotenv import load_dotenv
 from faster_whisper import WhisperModel
 from google import genai
 from google.genai import types
