@@ -7,12 +7,13 @@ import gc
 import tempfile
 import warnings
 from datetime import datetime
-
-# Suppress Google GenAI deprecation warnings
-warnings.filterwarnings("ignore", category=FutureWarning, module="google.generativeai")
-
 from typing import Dict, Any, Optional, List, Union
 
+# Suppress Google GenAI deprecation warnings (Must be before import)
+warnings.filterwarnings("ignore", category=FutureWarning, module="google.generativeai")
+warnings.filterwarnings("ignore", category=FutureWarning, module="google.api_core")
+
+# Now import libraries that might emit warnings
 import telegram
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, constants
 from telegram.ext import (
@@ -36,6 +37,24 @@ except ImportError:
     HAS_PADDLE = False
     print("Warning: paddleocr not installed.")
 
+# --- Health Check Server for Render ---
+from http.server import HTTPServer, BaseHTTPRequestHandler
+import threading
+
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot is likely running.")
+
+def start_health_check_server():
+    port = int(os.environ.get("PORT", 8080))
+    server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
+    thread = threading.Thread(target=server.serve_forever)
+    thread.daemon = True
+    thread.start()
+    logger.info(f"Health check server started on port {port}")
+
 load_dotenv()
 
 # Placeholder for Google Sheets to avoid runtime errors if creds missing
@@ -55,38 +74,57 @@ logger = logging.getLogger(__name__)
 # --- Configuration ---
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
-genai.configure(api_key=GOOGLE_API_KEY)
+if GOOGLE_API_KEY:
+    genai.configure(api_key=GOOGLE_API_KEY)
 
 GOOGLE_SHEETS_CREDENTIALS = "credentials.json"
 SPREADSHEET_ID = "1o4yG81XMKyhTAAxQDDFYfAdEzR2ah7ILxQElflDwevo"
 
-# Global Whisper Model
-try:
-    # Upgraded to base.en for better accuracy
-    whisper_model = WhisperModel("base.en", device="cpu", compute_type="int8")
-    logger.info("Faster-Whisper model loaded successfully (base.en).")
-except Exception as e:
-    logger.error(f"Failed to load Whisper model: {e}")
-    whisper_model = None
-    
-# Global PaddleOCR Model
-paddle_ocr = None
-if HAS_PADDLE:
+# --- Model Management (Lazy Loading for Memory Efficiency) ---
+# Render Free Tier has 512MB RAM. Streaming/Loading both models at once kills it.
+# We will load on demand and UNLOAD immediately after use.
+
+def get_whisper_model():
+    """Load Whisper only when needed."""
     try:
-         # show_log argument removed
-         # Using use_angle_cls=True enhances accuracy but uses more RAM.
-         paddle_ocr = PaddleOCR(use_angle_cls=True, lang='en') 
-         logger.info("PaddleOCR loaded successfully.")
+        logger.info("Loading Whisper model (base.en)...")
+        # 'base.en' is larger but more accurate.
+        model = WhisperModel("base.en", device="cpu", compute_type="int8")
+        return model
     except Exception as e:
-         logger.error(f"Failed to load PaddleOCR: {e}")
-         print(f"PaddleOCR Error Details: {e}") # Print to stdout for Render logs
+        logger.error(f"Failed to load Whisper model: {e}")
+        return None
+
+def unload_whisper_model(model):
+    """Explicitly unload Whisper to free RAM."""
+    if model:
+        del model
+    gc.collect()
+    logger.info("Unloaded Whisper model.")
+
+def get_paddle_ocr():
+    """Load PaddleOCR only when needed."""
+    if not HAS_PADDLE: return None
+    try:
+        logger.info("Loading PaddleOCR...")
+        # use_angle_cls=False saves RAM, lang='en'
+        paddle = PaddleOCR(use_angle_cls=True, lang='en', show_log=False)
+        return paddle
+    except Exception as e:
+        logger.error(f"Failed to load PaddleOCR: {e}")
+        return None
+
+def unload_paddle_ocr(paddle):
+    """Explicitly unload Paddle to free RAM."""
+    if paddle:
+        del paddle
+    gc.collect()
+    logger.info("Unloaded PaddleOCR.")
 
 # --- Global States ---
 REGISTER_NAME, REGISTER_CG = range(2)
 
 # --- Database (Local Mock) ---
-USER_DB_FILE = "user_db.json"
-
 USER_DB_FILE = "user_db.json"
 
 def load_user_db() -> Dict[str, Any]:
@@ -235,77 +273,87 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # --- VOICE ---
         if update.message.voice:
             interaction_type = "voice"
-            if not whisper_model:
-                await update.message.reply_text("Voice processing unavailable.")
+            
+            # Lazy Load Whisper
+            whisper = get_whisper_model()
+            if not whisper:
+                await update.message.reply_text("Voice processing currently unavailable (Low Memory).")
                 return
 
-            # Download OGG
-            file = await context.bot.get_file(update.message.voice.file_id)
-            with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as temp_ogg:
-                await file.download_to_drive(temp_ogg.name)
-                input_path = temp_ogg.name
-            
-            output_wav = input_path.replace(".ogg", ".wav")
-            
-            # Convert OGG -> WAV using ffmpeg-python
             try:
+                # Download OGG
+                file = await context.bot.get_file(update.message.voice.file_id)
+                with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as temp_ogg:
+                    await file.download_to_drive(temp_ogg.name)
+                    input_path = temp_ogg.name
+                
+                output_wav = input_path.replace(".ogg", ".wav")
+                
+                # Convert OGG -> WAV
                 (
                     ffmpeg
                     .input(input_path)
                     .output(output_wav, ac=1, ar='16000')
                     .run(quiet=True, overwrite_output=True)
                 )
-            except ffmpeg.Error as e:
-                logger.error(f"FFmpeg error: {e}")
-                await update.message.reply_text("Error processing audio format.")
+
+                # Transcribe
+                await update.message.reply_text("🎤 *Transcribing...*", parse_mode=constants.ParseMode.MARKDOWN)
+                
+                def run_transcribe(model, path):
+                    segments, _ = model.transcribe(path, beam_size=5, language="en")
+                    return " ".join([s.text for s in segments])
+
+                user_text_input = await asyncio.to_thread(run_transcribe, whisper, output_wav)
+                
+                # Cleanup
                 if os.path.exists(input_path): os.remove(input_path)
-                return
-
-            # Transcribe
-            await update.message.reply_text("🎤 *Transcribing...*", parse_mode=constants.ParseMode.MARKDOWN)
-            
-            def run_transcribe(path):
-                segments, _ = whisper_model.transcribe(path, beam_size=5, language="en")
-                return " ".join([s.text for s in segments])
-
-            user_text_input = await asyncio.to_thread(run_transcribe, output_wav)
-            
-            # Cleanup
-            if os.path.exists(input_path): os.remove(input_path)
-            if os.path.exists(output_wav): os.remove(output_wav)
-            
-            await update.message.reply_text(f"🎤 *You said:* {user_text_input}", parse_mode=constants.ParseMode.MARKDOWN)
+                if os.path.exists(output_wav): os.remove(output_wav)
+                
+                await update.message.reply_text(f"🎤 *You said:* {user_text_input}", parse_mode=constants.ParseMode.MARKDOWN)
+                
+            finally:
+                # Force Unload Whisper to save RAM for Gemini/OCR
+                unload_whisper_model(whisper)
 
         # --- IMAGE ---
         elif update.message.photo:
             interaction_type = "image"
-            if not paddle_ocr:
-                await update.message.reply_text("OCR processing unavailable.")
+            
+            # Lazy Load Paddle
+            ocr_engine = get_paddle_ocr()
+            if not ocr_engine:
+                await update.message.reply_text("OCR processing unavailable (Low Memory).")
                 return
 
-            photo = update.message.photo[-1] # Largest size
-            file = await context.bot.get_file(photo.file_id)
-            
-            with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as temp_img:
-                await file.download_to_drive(temp_img.name)
-                img_path = temp_img.name
-
-            await update.message.reply_text("🔍 *Reading Image...*", parse_mode=constants.ParseMode.MARKDOWN)
-
-            def run_ocr(path):
-                result = paddle_ocr.ocr(path, cls=True)
-                txts = [line[1][0] for line in result[0]] if result and result[0] else []
-                return "\n".join(txts)
-
-            extracted_text = await asyncio.to_thread(run_ocr, img_path)
-            
-            if not extracted_text.strip():
-                await update.message.reply_text("I couldn't read any text. Please try again with a clearer image.")
-                os.remove(img_path)
-                return
+            try:
+                photo = update.message.photo[-1] # Largest size
+                file = await context.bot.get_file(photo.file_id)
                 
-            user_text_input = f"[IMAGE CONTENT: {extracted_text}]"
-            os.remove(img_path)
+                with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as temp_img:
+                    await file.download_to_drive(temp_img.name)
+                    img_path = temp_img.name
+
+                await update.message.reply_text("🔍 *Reading Image...*", parse_mode=constants.ParseMode.MARKDOWN)
+
+                def run_ocr(engine, path):
+                    result = engine.ocr(path, cls=True)
+                    txts = [line[1][0] for line in result[0]] if result and result[0] else []
+                    return "\n".join(txts)
+
+                extracted_text = await asyncio.to_thread(run_ocr, ocr_engine, img_path)
+                
+                if not extracted_text.strip():
+                    await update.message.reply_text("I couldn't read any text. Please try again with a clearer image.")
+                    if os.path.exists(img_path): os.remove(img_path)
+                    return
+                    
+                user_text_input = f"[IMAGE CONTENT: {extracted_text}]"
+                if os.path.exists(img_path): os.remove(img_path)
+            
+            finally:
+                # Force Unload Paddle
+                unload_paddle_ocr(ocr_engine)
 
         # --- TEXT ---
         elif update.message.text:
@@ -376,24 +424,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Gemini Error: {e}")
         await update.message.reply_text("I'm having trouble thinking right now. Please try again.")
 
-# --- Health Check Server for Render ---
-from http.server import HTTPServer, BaseHTTPRequestHandler
-import threading
-
-class HealthCheckHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"Bot is likely running.")
-
-def start_health_check_server():
-    port = int(os.environ.get("PORT", 8080))
-    server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
-    thread = threading.Thread(target=server.serve_forever)
-    thread.daemon = True
-    thread.start()
-    logger.info(f"Health check server started on port {port}")
-
 def main():
     if not TOKEN:
         print("Error: TELEGRAM_BOT_TOKEN not set.")
@@ -408,6 +438,14 @@ def main():
 
     # Start the dummy server for Render
     start_health_check_server()
+
+    # Check FFmpeg
+    try:
+        ffmpeg.input("headers_check").output("null", f="null").run(capture_stdout=True, capture_stderr=True)
+    except ffmpeg.Error:
+        pass # Expected error, but checks binary presence roughly. 
+    except FileNotFoundError:
+        print("CRITICAL WARNING: FFmpeg not found in path.")
 
     application = Application.builder().token(TOKEN).build()
 
