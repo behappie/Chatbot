@@ -198,8 +198,17 @@ def log_to_sheets(user_info: Dict, interaction_type: str, content: str, response
         scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
         creds = ServiceAccountCredentials.from_json_keyfile_name(GOOGLE_SHEETS_CREDENTIALS, scope)
         client = gspread.authorize(creds)
-        sheet = client.open_by_key(SPREADSHEET_ID).sheet1
         
+        # Open by Key
+        try:
+            sheet = client.open_by_key(SPREADSHEET_ID).sheet1
+        except gspread.exceptions.APIError as e:
+            if "403" in str(e):
+                logger.error(f"Google Sheets Error: 403 FORBIDDEN. Please share the sheet with the email in credentials.json: {creds.service_account_email}")
+            elif "404" in str(e):
+                logger.error(f"Google Sheets Error: 404 NOT FOUND. Check SPREADSHEET_ID: {SPREADSHEET_ID}")
+            raise e
+            
         # Clean response of status tags for logging
         clean_response = response.replace("[INCORRECT]", "").replace("[CORRECT]", "").replace("[NEUTRAL]", "").strip()
         
@@ -466,6 +475,13 @@ def main():
     # Check Credentials
     if os.path.exists(GOOGLE_SHEETS_CREDENTIALS):
         print(f"Credentials file found: {GOOGLE_SHEETS_CREDENTIALS}")
+        try:
+            with open(GOOGLE_SHEETS_CREDENTIALS, 'r') as f:
+                creds_data = json.load(f)
+            print(f"Service Account Email: {creds_data.get('client_email', 'Unknown')}")
+            print("IMPORTANT: Share your Google Sheet with this email!")
+        except Exception:
+            print("Error reading credentials file.")
     else:
         print(f"CRITICAL WARNING: Credentials file '{GOOGLE_SHEETS_CREDENTIALS}' NOT found. Logging will fail.")
 
