@@ -5,7 +5,12 @@ import asyncio
 import io
 import gc
 import tempfile
+import warnings
 from datetime import datetime
+
+# Suppress Google GenAI deprecation warnings
+warnings.filterwarnings("ignore", category=FutureWarning, module="google.generativeai")
+
 from typing import Dict, Any, Optional, List, Union
 
 import telegram
@@ -67,7 +72,8 @@ except Exception as e:
 paddle_ocr = None
 if HAS_PADDLE:
     try:
-         paddle_ocr = PaddleOCR(use_angle_cls=True, lang='en', show_log=False)
+         # show_log argument removed as it causes errors in newer versions
+         paddle_ocr = PaddleOCR(use_angle_cls=True, lang='en') 
          logger.info("PaddleOCR loaded successfully.")
     except Exception as e:
          logger.error(f"Failed to load PaddleOCR: {e}")
@@ -365,10 +371,31 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Gemini Error: {e}")
         await update.message.reply_text("I'm having trouble thinking right now. Please try again.")
 
+# --- Health Check Server for Render ---
+from http.server import HTTPServer, BaseHTTPRequestHandler
+import threading
+
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot is likely running.")
+
+def start_health_check_server():
+    port = int(os.environ.get("PORT", 8080))
+    server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
+    thread = threading.Thread(target=server.serve_forever)
+    thread.daemon = True
+    thread.start()
+    logger.info(f"Health check server started on port {port}")
+
 def main():
     if not TOKEN:
         print("Error: TELEGRAM_BOT_TOKEN not set.")
         return
+
+    # Start the dummy server for Render
+    start_health_check_server()
 
     application = Application.builder().token(TOKEN).build()
 
