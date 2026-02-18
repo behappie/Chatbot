@@ -177,12 +177,8 @@ RULES:
 7.  **Fallback**: Use the current conversation context to determine if the student needs a direct answer.
 """
 
-# Use specific version to avoid 404 on some keys
-model = genai.GenerativeModel(
-    model_name="gemini-1.5-flash-001",
-    safety_settings=safety_settings,
-    system_instruction=SYSTEM_INSTRUCTION
-)
+# Initialize model placeholder (Configured in main)
+model = None
 
 # --- Google Sheets Setup ---
 def log_to_sheets(user_info: Dict, interaction_type: str, content: str, response: str):
@@ -440,6 +436,37 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Gemini Error: {e}")
         await update.message.reply_text("I'm having trouble thinking right now. Please try again.")
 
+# --- Debug Handler ---
+async def debug(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Helper command to get Service Email and Model info."""
+    response_lines = ["🔧 *Debug Info*"]
+    
+    # 1. Credentials / Email
+    if os.path.exists(GOOGLE_SHEETS_CREDENTIALS):
+        try:
+            with open(GOOGLE_SHEETS_CREDENTIALS, 'r') as f:
+                creds = json.load(f)
+            email = creds.get('client_email', 'Unknown')
+            response_lines.append(f"📧 *Service Email:* `{email}`")
+            response_lines.append("(Share your Google Sheet with this email!)")
+        except Exception as e:
+            response_lines.append(f"⚠️ Creds Error: {str(e)}")
+    else:
+        response_lines.append("❌ Credentials file NOT found.")
+
+    # 2. Gemini Models
+    try:
+        models = []
+        for m in genai.list_models():
+            if 'generateContent' in m.supported_generation_methods:
+                models.append(m.name)
+        response_lines.append(f"🤖 *Available Models:* \n`{', '.join(models)}`")
+    except Exception as e:
+        response_lines.append(f"❌ Model List Error: {e}")
+        
+    await update.message.reply_text("\n".join(response_lines), parse_mode=constants.ParseMode.MARKDOWN)
+
+# --- Main ---
 def main():
     if not TOKEN:
         print("Error: TELEGRAM_BOT_TOKEN not set.")
@@ -451,15 +478,34 @@ def main():
     else:
         masked_key = GOOGLE_API_KEY[:4] + "*" * (len(GOOGLE_API_KEY) - 8) + GOOGLE_API_KEY[-4:]
         print(f"GOOGLE_API_KEY found: {masked_key}")
-        
-        # Verify Model Availability
-        try:
-            print("Listing available Gemini models...")
-            for m in genai.list_models():
-                if 'generateContent' in m.supported_generation_methods:
-                    print(f" - {m.name}")
-        except Exception as e:
-            print(f"Error listing models: {e}")
+
+    # Initialize Gemini Model with Fallback
+    global model
+    available_models = []
+    try:
+        for m in genai.list_models():
+            if 'generateContent' in m.supported_generation_methods:
+                available_models.append(m.name)
+        print(f"Available Models: {available_models}")
+    except Exception as e:
+        print(f"Error listing models during init: {e}")
+    
+    # Selection Logic
+    chosen_model = "gemini-1.5-flash" # Default preference
+    if "models/gemini-1.5-flash" in available_models:
+        chosen_model = "gemini-1.5-flash"
+    elif "models/gemini-1.5-flash-001" in available_models:
+        chosen_model = "gemini-1.5-flash-001"
+    elif "models/gemini-pro" in available_models:
+        chosen_model = "gemini-pro"
+    
+    print(f"Selected Gemini Model: {chosen_model}")
+    
+    model = genai.GenerativeModel(
+        model_name=chosen_model,
+        safety_settings=safety_settings,
+        system_instruction=SYSTEM_INSTRUCTION
+    )
 
     # Start the dummy server for Render
     start_health_check_server()
@@ -468,7 +514,7 @@ def main():
     try:
         ffmpeg.input("headers_check").output("null", f="null").run(capture_stdout=True, capture_stderr=True)
     except ffmpeg.Error:
-        pass # Expected error, but checks binary presence roughly. 
+        pass 
     except FileNotFoundError:
         print("CRITICAL WARNING: FFmpeg not found in path.")
         
@@ -479,14 +525,12 @@ def main():
             with open(GOOGLE_SHEETS_CREDENTIALS, 'r') as f:
                 creds_data = json.load(f)
             print(f"Service Account Email: {creds_data.get('client_email', 'Unknown')}")
-            print("IMPORTANT: Share your Google Sheet with this email!")
         except Exception:
-            print("Error reading credentials file.")
+            pass
     else:
         print(f"CRITICAL WARNING: Credentials file '{GOOGLE_SHEETS_CREDENTIALS}' NOT found. Logging will fail.")
 
     application = Application.builder().token(TOKEN).build()
-
 
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
@@ -498,10 +542,12 @@ def main():
     )
 
     application.add_handler(conv_handler)
+    application.add_handler(CommandHandler("debug", debug)) # Add Debug Command
     application.add_handler(MessageHandler(filters.TEXT | filters.VOICE | filters.PHOTO, handle_message))
 
     print("Bot is running...")
     application.run_polling()
+
 
 if __name__ == "__main__":
     main()
