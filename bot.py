@@ -32,7 +32,12 @@ client = None
 
 # ... (DB functions) ...
 
-# ... (Syllabus Load) ...
+# --- Load Syllabus ---
+try:
+    with open("syllabus_context.txt", "r") as f:
+        SYLLABUS_CONTEXT = f.read()
+except FileNotFoundError:
+    SYLLABUS_CONTEXT = "Singapore JC H1 (8843) and H2 (9570) Economics Syllabus."
 
 # --- Gemini Configuration ---
 SYSTEM_INSTRUCTION = f"""
@@ -218,9 +223,9 @@ SPREADSHEET_ID = "1o4yG81XMKyhTAAxQDDFYfAdEzR2ah7ILxQElflDwevo"
 def get_whisper_model():
     """Load Whisper only when needed."""
     try:
-        logger.info("Loading Whisper model (base.en)...")
-        # 'base.en' is larger but more accurate.
-        model = WhisperModel("base.en", device="cpu", compute_type="int8")
+        logger.info("Loading Whisper model (small.en)...")
+        # 'small.en' matches ~512MB RAM constraints if careful, better accuracy.
+        model = WhisperModel("small.en", device="cpu", compute_type="int8")
         return model
     except Exception as e:
         logger.error(f"Failed to load Whisper model: {e}")
@@ -444,7 +449,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("🎤 *Transcribing...*", parse_mode=constants.ParseMode.MARKDOWN)
                 
                 def run_transcribe(model, path):
-                    segments, _ = model.transcribe(path, beam_size=5, language="en")
+                    segments, _ = model.transcribe(path, beam_size=1, language="en")
                     return " ".join([s.text for s in segments])
 
                 user_text_input = await asyncio.to_thread(run_transcribe, whisper, output_wav)
