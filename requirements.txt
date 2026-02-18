@@ -1,10 +1,11 @@
 python-telegram-bot==20.6
 google-generativeai
 faster-whisper
-paddlepaddle==2.6.2
-paddleocr>=2.7.0.3
+paddlepaddle==2.6.1
+paddleocr>=2.7.3
 opencv-python-headless
 ffmpeg-python
 python-dotenv
 gspread
 oauth2client
+

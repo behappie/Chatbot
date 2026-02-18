@@ -62,8 +62,9 @@ SPREADSHEET_ID = "1o4yG81XMKyhTAAxQDDFYfAdEzR2ah7ILxQElflDwevo"
 
 # Global Whisper Model
 try:
-    whisper_model = WhisperModel("tiny.en", device="cpu", compute_type="int8")
-    logger.info("Faster-Whisper model loaded successfully.")
+    # Upgraded to base.en for better accuracy
+    whisper_model = WhisperModel("base.en", device="cpu", compute_type="int8")
+    logger.info("Faster-Whisper model loaded successfully (base.en).")
 except Exception as e:
     logger.error(f"Failed to load Whisper model: {e}")
     whisper_model = None
@@ -72,16 +73,20 @@ except Exception as e:
 paddle_ocr = None
 if HAS_PADDLE:
     try:
-         # show_log argument removed as it causes errors in newer versions
+         # show_log argument removed
+         # Using use_angle_cls=True enhances accuracy but uses more RAM.
          paddle_ocr = PaddleOCR(use_angle_cls=True, lang='en') 
          logger.info("PaddleOCR loaded successfully.")
     except Exception as e:
          logger.error(f"Failed to load PaddleOCR: {e}")
+         print(f"PaddleOCR Error Details: {e}") # Print to stdout for Render logs
 
 # --- Global States ---
 REGISTER_NAME, REGISTER_CG = range(2)
 
 # --- Database (Local Mock) ---
+USER_DB_FILE = "user_db.json"
+
 USER_DB_FILE = "user_db.json"
 
 def load_user_db() -> Dict[str, Any]:
@@ -394,10 +399,18 @@ def main():
         print("Error: TELEGRAM_BOT_TOKEN not set.")
         return
 
+    # Debug Google API Key (Masked)
+    if not GOOGLE_API_KEY:
+        print("CRITICAL ERROR: GOOGLE_API_KEY is NOT set in environment variables.")
+    else:
+        masked_key = GOOGLE_API_KEY[:4] + "*" * (len(GOOGLE_API_KEY) - 8) + GOOGLE_API_KEY[-4:]
+        print(f"GOOGLE_API_KEY found: {masked_key}")
+
     # Start the dummy server for Render
     start_health_check_server()
 
     application = Application.builder().token(TOKEN).build()
+
 
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
